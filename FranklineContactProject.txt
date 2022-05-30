@@ -1,0 +1,337 @@
+Franklin eContact Project
+
+				franklinWrapperClass 
+				getAccessToken
+Classes :-		franklinCallouts
+				FranklinAPIHelper
+				FranklinController
+				CustomSettingHelper
+
+
+-------------------------------------------------------------------------------Schedular---------------------------------------------------------------------------------------------
+
+public class getAccessToken implements Schedulable {
+    
+    public void execute(SchedulableContext sc) {
+        getAccessTokenCallout();
+    } 
+    
+    @future (callout=true)
+    public static void getAccessTokenCallout(){
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint('callout:franklin_api/token');
+        req.setMethod('POST');
+        req.setBody('grant_type='+ EncodingUtil.urlEncode('password', 'UTF-8') + '&username='+'{!$Credential.Username}' + '&password='+'{!$Credential.Password}');
+        Http http = new Http();
+        HTTPResponse res = http.send(req);
+        System.debug(res.getBody());
+        Map<string, object > results =(Map<String, Object>) JSON.deserializeuntyped(res.getBody());
+        String acctoken = (string)results.get('access_token');
+        System.debug('acctoken------'+acctoken);
+        franklinAccessToken__c fat = franklinAccessToken__c.getOrgDefaults();
+        fat.accessToken1__c = acctoken.subString(0,203);
+        fat.accessToken2__c = acctoken.subString(203,acctoken.length());
+        upsert fat;
+        Integer ExpIn = (Integer)results.get('expires_in');
+        scheduleThis(ExpIn);
+    }
+    
+    public static void scheduleThis(Integer ExpIn){
+        List<CronTrigger> previousScheduleList = [SELECT Id, CronJobDetail.Name, State FROM CronTrigger WHERE State = 'Deleted' AND CronJobDetail.Name like 'FranklineContactRefreshAccessToken%'];
+        DateTime runtime = System.now().addSeconds(ExpIn);
+        String cronString = runtime.second() + ' ' + runtime.minute() + ' ' + runtime.hour() + ' ' +
+                           runtime.day() + ' ' + runtime.month() + ' ? ' + runtime.year();
+        
+        if(previousScheduleList.size()>0){
+            for(CronTrigger item : previousScheduleList)
+            {
+                System.abortJob(item.id);
+            }
+            
+       		System.schedule('FranklineContactRefreshAccessToken Job '+String.valueOf(runtime), cronString, new getAccessToken());
+        }
+        else{
+            System.schedule('FranklineContactRefreshAccessToken Job '+String.valueOf(runtime), cronString, new getAccessToken());
+        }
+        
+    }
+}
+
+------------------------------------------------------------------franklin callouts-----------------------------------------------------------------------------
+
+public class franklinCallouts {
+    public static string mainBaseUrl = 'callout:franklin_api/';
+    public static Map<string,string> apiEndpointsMap = new Map<string,string>();
+    static {
+        apiEndpointsMap.put('accessToken','token');
+        apiEndpointsMap.put('getClients','api/schedule/clients');
+        apiEndpointsMap.put('validateCustomer','api/schedule/validate');
+        apiEndpointsMap.put('getEligibility','api/schedule/eligibility');
+        apiEndpointsMap.put('getAvailability','api/schedule/availability');
+        apiEndpointsMap.put('getTimeslot','api/schedule/timeslots');
+        apiEndpointsMap.put('scheduleAppointment','api/schedule/schedule-appointment');
+    }
+    
+    public static HTTPResponse doCallout(Map<String, String> headersMap, String jsonBody, String endpoint, String methodType){
+        Http http = new Http();
+        HTTPRequest req = new HTTPRequest();
+        req.setEndpoint(endpoint);
+        req.setMethod(methodType); 
+        
+        for(String item : headersMap.keySet()) 
+        { 
+            req.setHeader(item, headersMap.get(item)); 
+        }
+         
+        if(String.isNotBlank(jsonBody))
+        {  
+            req.setBody(jsonBody);
+            
+        }
+        
+        return http.send(req); 
+      }
+}
+
+---------------------------------------------------------------------------FranklinAPIHelper---------------------------------------------------------------------
+public class FranklinAPIHelper{
+    public static void validateCustomerEligibility(String firstName,String lastName,String EmailAddress,String Address,String City,String State,String ZipCode,String ClientId,String AccountNumber,String PhoneNumber){
+        Map<String,Object> resultMap = new map<String , Object>();
+        
+        Map<String, String> headersMap = new Map<String,String>();
+        headersMap.put('Authorization',CustomSettingHelper.storedAccessToken());
+        headersMap.put('Content-Type', 'application/x-www-form-urlencoded'); 
+        String jsonBody = 'AccountNumber='+EncodingUtil.urlEncode('5492498008','UTF-8')+'&ClientId='+EncodingUtil.urlEncode('2','UTF-8')+'&ZipCode='+EncodingUtil.urlEncode('60004','UTF-8');
+            
+        String jsonBody2 = 'FirstName='+EncodingUtil.urlEncode('MICHELLE','UTF-8')+
+            '&EmailAddress='+EncodingUtil.urlEncode('lvpugs3@gmail.com','UTF-8')+
+            '&LastName='+EncodingUtil.urlEncode('HEID','UTF-8')+
+            '&ClientId='+EncodingUtil.urlEncode('14','UTF-8')+
+            '&Address='+EncodingUtil.urlEncode('1513 N LINDEN ST','UTF-8')+
+            '&AccountNumber='+EncodingUtil.urlEncode('8615480717','UTF-8')+
+            '&City='+EncodingUtil.urlEncode('BLOOMINGTON','UTF-8')+
+            '&PhoneNumber='+EncodingUtil.urlEncode('(309)261-6800','UTF-8')+
+            '&State='+EncodingUtil.urlEncode('IL','UTF-8')+
+            '&ZipCode='+EncodingUtil.urlEncode('61701','UTF-8');
+        //String jsonBody = json.serialize(fwc); 
+        
+        String endpoint = franklinCallouts.mainBaseUrl + (franklinCallouts.apiEndpointsMap).get('validateCustomer');
+        HTTPResponse res = new HTTPResponse();
+        res = franklinCallouts.doCallout(headersMap, jsonBody, endpoint, 'POST' );
+        
+        if(res.statusCode = 200){
+            
+        }
+        else{
+            
+            Map<string, object > result =(Map<String, Object>) JSON.deserializeuntyped(res.getBody());
+            resultMap.put('Error', result.get('ResultMessage'));
+        	resultMap.put('AccountId','');
+        	resultMap.put('Offerings','');
+            return resultMap;
+        }
+            
+            
+        System.debug('res::::'+res);
+        Map<string, object > results =(Map<String, Object>) JSON.deserializeuntyped(res.getBody());
+        System.debug('Clients------'+results);
+        //System.debug((results.get('AccountId')).getType());
+        getEligibilityCallout(String.valueOf(results.get('AccountId')),ZipCode);
+        
+    }
+    public static void getEligibilityCallout(String AccountId,String ZipCode){
+        System.debug('AccountId------'+AccountId);
+         System.debug('ZipCode------'+ZipCode);
+        Map<String, String> headersMap = new Map<String,String>();
+        headersMap.put('Authorization',CustomSettingHelper.storedAccessToken());
+        String jsonBody ='';
+        String endpoint = franklinCallouts.mainBaseUrl + (franklinCallouts.apiEndpointsMap).get('getEligibility') +'?AccountId='+AccountId;
+        HTTPResponse res = new HTTPResponse();
+        res = franklinCallouts.doCallout(headersMap, jsonBody, endpoint, 'GET' );
+        Map<string, object > results =(Map<String, Object>) JSON.deserializeuntyped(res.getBody());
+        System.debug('offerings------'+results);
+        Object offObj = results.get('Offerings');
+        list<Object> mlst = (list<Object>)offObj;
+        //for(Object item : mlst){
+        //    Map<String, Object> m = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(item));
+        //    getAvailabilityCallout(AccountId,String.valueOf(m.get('ComponentId')),ZipCode);
+        //}
+        Map<String, Object> m = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(mlst[0]));
+        //System.debug('componentId::'+m.get('ComponentId'));
+        //System.debug('offObj::'+offObj);
+        //System.debug('list:'+mlst[0]);
+		
+        getAvailabilityCallout(AccountId,String.valueOf(m.get('ComponentId')),ZipCode);
+        
+    }
+    public static void getAvailabilityCallout(String AccountId,String ComponentId,String ZipCode){
+        System.debug('AccountId'+AccountId);
+        System.debug('ComponentId'+ComponentId);
+        Map<String, String> headersMap = new Map<String,String>();
+        headersMap.put('Authorization',CustomSettingHelper.storedAccessToken());
+        String jsonBody = ''; 
+        String endpoint = franklinCallouts.mainBaseUrl + (franklinCallouts.apiEndpointsMap).get('getAvailability')+'?AccountId='+AccountId+'&ComponentId='+ComponentId+'&ZipCode='+ZipCode;
+        HTTPResponse res = new HTTPResponse();
+        res = franklinCallouts.doCallout(headersMap, jsonBody, endpoint, 'GET' );
+        Map<string, object > results =(Map<String, Object>) JSON.deserializeuntyped(res.getBody());
+        System.debug('AvailableDays------'+results);
+        Object offObj = results.get('AvailableDays');
+        list<Object> lst = (list<Object>)offObj;
+        //for(Object item : mlst){
+        //    Map<String, Object> m = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(item));
+        //    getAvailabilityCallout(AccountId,String.valueOf(m.get('ComponentId')),ZipCode);
+        //}
+        Map<String, Object> m = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(lst[0]));
+        //System.debug('componentId::'+m.get('ComponentId'));
+        //System.debug('offObj::'+offObj);
+        //System.debug('list:'+mlst[0]);
+		
+        getTimeslotsCallout(String.valueOf(m.get('Date')),ComponentId,ZipCode);
+        
+    }
+    public static void getTimeslotsCallout(String DateOfAppointment,String ComponentId,String ZipCode){
+        Map<String, String> headersMap = new Map<String,String>();
+        headersMap.put('Authorization',CustomSettingHelper.storedAccessToken());
+        headersMap.put('Content-Type', 'application/x-www-form-urlencoded'); 
+        String jsonBody = ''; 
+        String endpoint = franklinCallouts.mainBaseUrl + (franklinCallouts.apiEndpointsMap).get('getTimeslot')+'?Date='+DateOfAppointment+'&ComponentId='+ComponentId+'&ZipCode='+ZipCode;
+        HTTPResponse res = new HTTPResponse();
+        res = franklinCallouts.doCallout(headersMap, jsonBody, endpoint, 'GET' );
+        Map<string, object > results =(Map<String, Object>) JSON.deserializeuntyped(res.getBody());
+        System.debug('Timeslots------'+results);
+        
+    }
+    public static void scheduleAppointmentCallout(String AccountId,String ComponentId,String Comment,String TeamId,String ContactName,String ContactPhone,String DateOfAppointment,String WorkZoneId,String StartTime,String EndTime,String EmailAddress){
+        Map<String, String> headersMap = new Map<String,String>();
+        headersMap.put('Authorization',CustomSettingHelper.storedAccessToken());
+        headersMap.put('Content-Type', 'application/x-www-form-urlencoded'); 
+        String jsonBody = 'AccountId='+EncodingUtil.urlEncode('John','UTF-8')+
+            '&ComponentId='+EncodingUtil.urlEncode('abc@123.com','UTF-8')+
+            '&Comment='+EncodingUtil.urlEncode('Deo','UTF-8')+
+            '&TeamId='+EncodingUtil.urlEncode('2','UTF-8')+
+            '&ContactName='+EncodingUtil.urlEncode('123 Main St','UTF-8')+
+            '&ContactPhone='+EncodingUtil.urlEncode('8615480717','UTF-8')+
+            '&Date='+EncodingUtil.urlEncode('Raleigh','UTF-8')+
+            '&WorkZoneId='+EncodingUtil.urlEncode('5551234567','UTF-8')+
+            '&StartTime='+EncodingUtil.urlEncode('NC','UTF-8')+
+            '&EndTime='+EncodingUtil.urlEncode('27610','UTF-8')+
+            '&EmailAddress='+EncodingUtil.urlEncode('27610','UTF-8'); 
+        
+        String endpoint = franklinCallouts.mainBaseUrl + (franklinCallouts.apiEndpointsMap).get('getEligibility');
+        HTTPResponse res = new HTTPResponse();
+        res = franklinCallouts.doCallout(headersMap, jsonBody, endpoint, 'POST' );
+        Map<string, object > results =(Map<String, Object>) JSON.deserializeuntyped(res.getBody());
+        System.debug('Appointment------'+results);
+        
+    }
+    
+}
+
+-------------------------------------custom settings -------------------------------------------------------
+
+public class CustomSettingHelper {
+    public static String storedAccessToken(){
+        franklinAccessToken__c fat = franklinAccessToken__c.getOrgDefaults();
+		String token = 'Bearer '+ fat.accessToken1__c + fat.accessToken2__c;
+        return token;
+    }
+    public static list<FranklinClientsMapping__c> clientMappingRecords(){
+        list<FranklinClientsMapping__c> ClientIdlist = [SELECT Type__c,ClientKey__c,ClientId__c FROM FranklinClientsMapping__c];
+        System.debug('ClientIdlist'+ ClientIdlist);
+        return ClientIdlist;
+    }
+    public static String clientIdFromClientKey(String Clientkey){
+        FranklinClientsMapping__c ClientIdRec = [SELECT ClientId__c FROM FranklinClientsMapping__c WHERE ClientKey__c =:Clientkey];
+        System.debug('clientIdFromClientKey::'+ ClientIdRec.ClientId__c );
+        return ClientIdRec.ClientId__c ;
+        
+    }
+    public static Integer storedTimeoutSetting(){
+        franklinAccessToken__c fat = franklinAccessToken__c.getOrgDefaults();
+		System.debug('Timeout Setting'+fat.Timeout_Setting__c);
+        return (Integer)fat.Timeout_Setting__c;
+        
+    }
+
+}
+
+
+
+----------------------------------------------------------------test class--------------------------------------------------------------------------------------
+
+@istest
+public class FranklinAPIHelperTest {
+    public static testMethod void testFranklinAPIHelper(){
+        franklinAccessToken__c setting = new franklinAccessToken__c();
+        setting.accessToken1__c = 'Test Setting';
+        setting.accessToken2__c = 'Whatever';
+        setting.Timeout_Setting__c = 30000;
+        insert setting;
+        FranklinClientsMapping__c Fmapping = new FranklinClientsMapping__c();
+        Fmapping.ClientId__c = '3';
+        Fmapping.ClientKey__c = 'Peoples Gas';
+        Fmapping.Type__c = 'Gas Utility';
+        Fmapping.Name = 'Peoples Gas';		
+        insert Fmapping;
+        System.Test.startTest();
+        Test.setMock(HttpCalloutMock.class, new RestMock());
+        FranklinAPIHelper.validateCustomerEligibility('', '', '', '', '', '', '', '2', '5492498008', '');
+        FranklinAPIHelper.getAvailabilityCallout('460644', '497', '60004');
+        FranklinAPIHelper.getTimeslotsCallout('2022-05-30T00:00:00', '497', '60004');
+        FranklinAPIHelper.scheduleAppointmentCallout('460644', '497', 'Comment', '380', 'ContactName', 'ContactPhone', '2022-05-30T00:00:00', '', '14:00:00', '16:00:00', 'testAppointment@aiqueous.com'); 
+        getAccessToken.getAccessTokenCallout();
+        getAccessToken.scheduleThis(3599);
+        CustomSettingHelper.clientMappingRecords();
+        String clientIdfromKey = CustomSettingHelper.clientIdFromClientKey('Peoples Gas');
+        System.test.stopTest(); 
+    }
+    public static testMethod void testCatchFranklinAPIHelper(){
+        System.Test.startTest();
+        Test.setMock(HttpCalloutMock.class, new RestMock());
+        FranklinAPIHelper.validateCustomerEligibility('', '', '', '', '', '', '', '2', '5492498008', '');
+        FranklinAPIHelper.getAvailabilityCallout('460644', '497', '60004');
+        FranklinAPIHelper.getTimeslotsCallout('2022-05-30T00:00:00', '497', '60004');
+        FranklinAPIHelper.scheduleAppointmentCallout('460644', '497', 'Comment', '380', 'ContactName', 'ContactPhone', '2022-05-30T00:00:00', '', '14:00:00', '16:00:00', 'testAppointment@aiqueous.com'); 
+        System.test.stopTest(); 
+    }
+    public static testMethod void testElseFranklinAPIHelper(){
+        franklinAccessToken__c setting = new franklinAccessToken__c();
+        setting.accessToken1__c = 'Test Setting';
+        setting.accessToken2__c = 'Whatever';
+        setting.Timeout_Setting__c = 30000;
+        insert setting;
+        System.Test.startTest();
+        Test.setMock(HttpCalloutMock.class, new RestMockElse());
+        FranklinAPIHelper.validateCustomerEligibility('', '', '', '', '', '', '', '2', '5492498008', '');
+        FranklinAPIHelper.getAvailabilityCallout('460644', '497', '60004');
+        FranklinAPIHelper.getTimeslotsCallout('2022-05-30T00:00:00', '497', '60004');
+        FranklinAPIHelper.scheduleAppointmentCallout('460644', '497', 'Comment', '380', 'ContactName', 'ContactPhone', '2022-05-30T00:00:00', '', '14:00:00', '16:00:00', 'testAppointment@aiqueous.com'); 
+        System.test.stopTest(); 
+        
+    }
+    
+    public class RestMock implements HttpCalloutMock {
+
+        public HTTPResponse respond(HTTPRequest req) {
+            //String fullJson = 'your Json Response';
+
+            HTTPResponse res = new HTTPResponse();
+            res.setHeader('Content-Type', 'text/json');
+            res.setBody('{"fullJson":"test" ,"IsValid":true,"expires_in":3599,"access_token":"hXJiRTomWfHYb5SAY0SYf7Pv4Hp7k5Hoiyy0PqSAt-sOqrLyKt2IjYdE9Cyn1_SzPB2aC9gDQwWuHbt7sH6bUGSV1IrVMEypsk_SNDoXOFKXw0b5CLNtZnZ2nrKSTVuvqPYiwcpoYq8jiiBBUoSqG4479LOrjxQg2pcZlRGou2tqqSLs4NmXESrBILW3uIFyJMb8kwQu-gt7Iy0IrojdiwKl1fkDdC_6ldQNjXoF_-P_A3UiOgUyMosyhRkxiOfvaivGcdp70I91ETNagx6sk5ZUvaFgmnCcmZBlM2xgJFxXnWzuxhLJ6zcBHNLw1uSWzbAGBRjoDUhZv2TN4_uIh03icnbnK5EGT8EDWDu51qEwl03SrUjj4KQVEkw_HA7EDVeNnfw41Fbz-CIUbQjUqw"}');
+            res.setStatusCode(200);
+            return res;
+        }
+    }
+    public class RestMockElse implements HttpCalloutMock {
+
+        public HTTPResponse respond(HTTPRequest req) {
+            //String fullJson = 'your Json Response';
+			HTTPResponse res = new HTTPResponse();
+            res.setHeader('Content-Type', 'text/json');
+            res.setBody('{"fullJson":"test","IsValid":true,"ResultMessage":"success","AvailableDays": [{"Date":"2022-10-24T00:00:00"},{"Date":"2022-10-25T00:00:00"}],"Timeslots": [{ "TeamId": 380},{ "TeamId": 381}],"Success":true}');
+            res.setStatusCode(200);
+            return res;
+        }
+    }
+
+}

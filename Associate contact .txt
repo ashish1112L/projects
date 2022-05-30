@@ -1,0 +1,84 @@
+<!-- sldsValidatorIgnore -->
+<!-- sldsValidatorIgnoreNextLine -->
+<template>
+    <lightning-record-edit-form object-api-name="ECOiQ__Projects__c" onsubmit ={handleSubmit}>
+        <lightning-quick-action-panel header="Associate Contact">
+            
+                <lightning-messages> </lightning-messages>
+                <div class="slds-scrollable" style="height:10rem">
+                    <lightning-input-field field-name="ECOiQ__Contacts__c" required="true"></lightning-input-field>
+                </div>
+             
+            
+            <div slot="footer">
+                <lightning-button variant="neutral" label="Cancel" onclick={closeAction}></lightning-button>
+                <lightning-button variant="brand" label="Associate" type="submit" class="slds-m-left_x-small" onsubmit ={handleSubmit} ></lightning-button>
+            </div> 
+            
+        </lightning-quick-action-panel>   
+    </lightning-record-edit-form>             
+</template>
+
+
+
+
+import { LightningElement,api } from 'lwc';
+import { CloseActionScreenEvent } from 'lightning/actions';
+import associateContact from '@salesforce/apex/SendEmailToContactController.associateContact';
+import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+
+export default class AssociateContactComponent extends LightningElement {
+    @api recordId; 
+    handleSubmit(event){
+        event.preventDefault();       
+        const fields = event.detail.fields;
+        console.log(fields.ECOiQ__Contacts__c);
+        if(fields.ECOiQ__Contacts__c){
+            associateContact({
+                rId : this.recordId, conId : fields.ECOiQ__Contacts__c
+            })
+            .then(result=>{
+                this.showToast('Success','success','Contact Associated Successfully');         
+                console.log('Result checkPartNum - AFTER',result);
+                this.dispatchEvent(new CloseActionScreenEvent());
+            })
+            .catch(error=>{
+                console.log('error.message ----------->>>>>>>>>> ', error.body.message);
+                this.showToast('Error','error',error.body.message);
+                this.dispatchEvent(new CloseActionScreenEvent());
+            });
+        }        
+     }
+
+    closeAction(){
+        this.dispatchEvent(new CloseActionScreenEvent());
+    }
+
+    showToast(title, variant,message) {
+        const evnt = new ShowToastEvent({
+            title: title,
+            message: message,
+            variant: variant,
+            mode: 'dismissable'
+        });
+        this.dispatchEvent(evnt);
+    }
+
+}
+
+
+
+
+public class SendEmailToContactController {
+    
+    @AuraEnabled
+    public static String associateContact(Id rId,string conId){
+        System.debug('rId'+rId);
+        System.debug('conId'+conId);
+        contact con = [SELECT Project__c FROM Contact WHERE Id =: conId];
+        con.Project__c = rId;
+        update con;
+        return 'SUCCESS';
+
+    }
+}
