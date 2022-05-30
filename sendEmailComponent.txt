@@ -1,0 +1,203 @@
+<!-- sldsValidatorIgnore -->
+
+<template>
+    <lightning-quick-action-panel header="Send Email To Contacts">
+        <div class="slds-scrollable" style="height:10rem">
+            <lightning-combobox 
+                name="select email template" 
+                label="select email template"  
+                value={templates}
+                options={templates}>
+            </lightning-combobox>
+        </div>
+        
+        <div slot="footer">
+          <lightning-button variant="neutral" label="Cancel" onclick={closeAction}></lightning-button>
+          <lightning-button variant="brand" label="Send" onclick={closeAction}></lightning-button>
+        </div>
+    </lightning-quick-action-panel>
+</template>
+
+
+
+
+import { LightningElement,wire,track,api } from 'lwc';
+import { CloseActionScreenEvent } from 'lightning/actions';
+import emailTemplates from '@salesforce/apex/SendEmailToContactController.getEmailTemplates';
+import sendMailToContacts from '@salesforce/apex/SendEmailToContactController.sendMailToContacts';
+import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+
+export default class SendEmailToContacts extends LightningElement {
+    @api recordId;
+    @track templates;
+	@track error;
+    @track value = '';
+    @track isSendDisable = true;
+    @wire (emailTemplates, {rId : '$recordId'})
+	wiredTemplates({data, error}){
+		if(data) {
+            console.log('data--',data);
+            let lstOption = [];
+            for (var i = 0;i < data.length;i++) {
+                lstOption.push({label: data[i],value: data[i]});
+            }
+            this.error = undefined;
+            this.templates = lstOption;
+        }else {
+			this.templates =undefined;
+			this.error = error;
+		}
+	}
+
+    handleChange(event){
+        this.value = event.detail.value;
+        console.log('value---',this.value);
+        this.isSendDisable = false;
+    }
+
+    sendAction(){
+
+        sendMailToContacts({
+            templateName : this.value, rId : this.recordId
+        })
+        .then(result=>{
+            if(result && result.IsSuccess == 'true'){
+                this.showToast('Success','success','Email sending activity to related contacts has been initiated.');
+            }
+            else if(result && result.IsSuccess == 'false' && result.Info != ''){
+                this.showToast('Info','info',result.Info);
+            }     
+            else if(result && result.IsSuccess == 'false' && result.Error != ''){
+                this.showToast('Error','error',result.Error);
+            }         
+            console.log('Result checkPartNum - AFTER',result);
+            this.dispatchEvent(new CloseActionScreenEvent());
+        })
+        .catch(error=>{
+            console.log('error.message ----------->>>>>>>>>> ', error.body.message);
+            this.showToast('Error','error',error.body.message);
+            this.dispatchEvent(new CloseActionScreenEvent());
+        });
+    }
+    
+    closeAction(){
+        this.dispatchEvent(new CloseActionScreenEvent());
+    }
+    
+
+
+    showToast(title, variant,message) {
+        const evnt = new ShowToastEvent({
+            title: title,
+            message: message,
+            variant: variant,
+            mode: 'dismissable'
+        });
+        this.dispatchEvent(evnt);
+    }
+}
+
+
+
+
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>54.0</apiVersion>
+    <isExposed>true</isExposed>
+    <targets>
+        <target>lightning__RecordAction</target>
+    </targets>
+    
+</LightningComponentBundle>
+
+----------------------------------------------------------------------apexCONTROLLER-------------------------------------------
+
+public class SendEmailToContactController {
+    @AuraEnabled(cacheable=true)
+    public static list<String> getEmailTemplates(Id rId){
+        String ObjName = String.valueOf(rId.getSObjectType());
+        //Mass_Email_Template__c met = Mass_Email_Template__c.getOrgDefaults();
+		//String ObjAPIName = met.Object_API_Name__c ;
+        //String templateIds = met.Email_Template_Ids__c;
+        //System.debug('ObjAPIName---'+ObjAPIName);
+        //System.debug('templateIds---'+templateIds);
+        
+        Mass_Email_Template__c templateIds  =  [SELECT Email_Template_Ids__c
+                                                        FROM Mass_Email_Template__c 
+                                                        WHERE Object_API_Name__c =:ObjName];
+        System.debug('templateIdslist---'+templateIds);
+        List<String> strTempIdslist = (String.valueOf(templateIds.Email_Template_Ids__c)).split(',');  
+        System.debug('strTempIdslist----'+strTempIdslist);
+        list<String> tempNamelist = new list<String>();                                                
+        for(String temp :strTempIdslist){
+            EmailTemplate tempName = [SELECT Name FROM EmailTemplate WHERE Id =:temp];
+            tempNamelist.add(String.valueOf(tempName.Name));
+        }                                                            
+        System.debug('tempNamelist----'+tempNamelist);
+        return  tempNamelist;
+        
+    }
+    @AuraEnabled(cacheable=true)
+    public static Map<String,String> sendMailToContacts(String templateName, Id rId){
+        
+        Map<String,String> resultMap = new Map<String,String>();
+        resultMap.put('Info','');
+        resultMap.put('Error','');
+        resultMap.put('IsSuccess','false');
+        system.debug('templateName'+templateName);
+        system.debug('rId'+rId);
+        try{
+            EmailTemplate temp = [SELECT Id FROM EmailTemplate WHERE Name =:templateName];
+            list<Contact> ContactIdlist = [SELECT Id,Email,firstname  FROM Contact WHERE Project__c = :rId AND Email!=null];
+            system.debug('ContactIdlist'+ContactIdlist);
+            if(ContactIdlist.isEmpty()){
+                resultMap.put('Info','No related contacts to send an email to.');
+                return resultMap;
+            }
+            //Map<Id, Contact> contactMap = new Map<Id, Contact>([SELECT Id, Email FROM Contact WHERE Project__c = :rId]);
+            list<Id> listContactId = new list<Id>();
+            for(Contact con : ContactIdlist){
+                listContactId.add(con.Id);
+            }
+            system.debug('listContactId'+listContactId);
+            Messaging.MassEmailMessage emails=new Messaging.MassEmailMessage(); 
+            emails.setTargetObjectIds(listContactId); //contactMap.keySet()
+            emails.setTemplateId(temp.Id);
+            //emails.setsubject('note');
+            emails.setSaveAsActivity(true);
+            system.debug('emails'+emails);
+            //Messaging.SendEmail(New Messaging.MassEmailMessage[]{emails});
+    
+            Messaging.SendEmailResult[] messagingResults = Messaging.SendEmail(New Messaging.MassEmailMessage[]{emails});
+            for (Messaging.SendEmailResult messagingResult : messagingResults)
+            {
+                if (!messagingResult.isSuccess()) {
+                    for(Messaging.SendEmailError err : messagingResult.getErrors()) {
+                        System.debug('The following error has occurred.');
+                        System.debug(err.getStatusCode() + ': ' + err.getMessage());
+                        System.debug('fields that affected this error: ' + err.getFields());
+                    }
+                }
+            }
+            system.debug('email sent');
+            resultMap.put('IsSuccess','true');
+        }
+        catch(Exception ex){
+            System.debug('ex--'+ex);
+            resultMap.put('Error','Error occurs!');
+            return resultMap;
+        }
+        return resultMap;
+        //return 'SUCCESS';
+    }
+    @AuraEnabled
+    public static String associateContact(Id rId,string conId){
+        System.debug('rId'+rId);
+        System.debug('conId'+conId);
+        contact con = [SELECT Project__c FROM Contact WHERE Id =: conId];
+        con.Project__c = rId;
+        update con;
+        return 'SUCCESS';
+
+    }
+}
